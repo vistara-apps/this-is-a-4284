@@ -5,9 +5,11 @@ import RecordingButton from './components/RecordingButton'
 import LanguageSelector from './components/LanguageSelector'
 import AlertBar from './components/AlertBar'
 import SubscriptionModal from './components/SubscriptionModal'
+import { UserProvider, useUser } from './contexts/UserContext'
 import { useLocation } from './hooks/useLocation'
 import { useRecording } from './hooks/useRecording'
 import { useContentGeneration } from './hooks/useContentGeneration'
+import { legalService } from './services/api'
 
 const LEGAL_GUIDES = [
   {
@@ -57,18 +59,36 @@ const SCRIPTED_RESPONSES = {
   ]
 }
 
-function App() {
-  const [user, setUser] = useState({
-    subscriptionStatus: 'free',
-    preferredLanguage: 'en',
-    locationEnabled: false
-  })
+function AppContent() {
   const [selectedGuide, setSelectedGuide] = useState(null)
   const [showSubscriptionModal, setShowSubscriptionModal] = useState(false)
   const [searchTerm, setSearchTerm] = useState('')
+  const [guides, setGuides] = useState(LEGAL_GUIDES)
+  const [isLoadingGuides, setIsLoadingGuides] = useState(false)
+  
+  const { 
+    user, 
+    subscriptionStatus, 
+    preferences, 
+    updatePreferences, 
+    updateSubscription,
+    hasPremiumAccess,
+    hasFeatureAccess 
+  } = useUser()
   
   const { location, requestLocation } = useLocation()
-  const { isRecording, startRecording, stopRecording, recordings } = useRecording()
+  const { 
+    isRecording, 
+    startRecording, 
+    stopRecording, 
+    recordings,
+    uploadToIPFS,
+    downloadRecording,
+    shareRecording,
+    isUploading,
+    uploadProgress,
+    deleteRecording
+  } = useRecording()
   const { generateContent, isGenerating } = useContentGeneration()
 
   useEffect(() => {
@@ -76,32 +96,52 @@ function App() {
     requestLocation()
   }, [])
 
-  const filteredGuides = LEGAL_GUIDES.filter(guide =>
+  // Load state-specific guides when location changes
+  useEffect(() => {
+    if (location?.state && hasFeatureAccess('state_specific_content')) {
+      loadStateSpecificGuides(location.state)
+    }
+  }, [location, hasFeatureAccess])
+
+  const loadStateSpecificGuides = async (state) => {
+    setIsLoadingGuides(true)
+    try {
+      const stateGuides = await legalService.getGuides(state, preferences.language)
+      setGuides([...LEGAL_GUIDES, ...stateGuides])
+    } catch (error) {
+      console.error('Failed to load state-specific guides:', error)
+    } finally {
+      setIsLoadingGuides(false)
+    }
+  }
+
+  const filteredGuides = guides.filter(guide =>
     guide.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
     guide.category.toLowerCase().includes(searchTerm.toLowerCase())
   )
 
   const handleGuideSelect = (guide) => {
-    if (guide.isPremium && user.subscriptionStatus === 'free') {
+    if (guide.isPremium && !hasPremiumAccess()) {
       setShowSubscriptionModal(true)
       return
     }
     setSelectedGuide(guide)
   }
 
-  const handleSubscribe = () => {
-    setUser(prev => ({ ...prev, subscriptionStatus: 'premium' }))
+  const handleSubscribe = (plan) => {
+    updateSubscription(plan)
     setShowSubscriptionModal(false)
   }
 
   const handleLanguageChange = (language) => {
-    setUser(prev => ({ ...prev, preferredLanguage: language }))
+    updatePreferences({ language })
   }
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-purple-600 via-blue-600 to-purple-800">
       <Header 
         user={user}
+        subscriptionStatus={subscriptionStatus}
         onLanguageChange={handleLanguageChange}
       />
       
@@ -121,8 +161,14 @@ function App() {
               isRecording={isRecording}
               onStartRecording={startRecording}
               onStopRecording={stopRecording}
-              isPremium={user.subscriptionStatus === 'premium'}
+              isPremium={hasPremiumAccess()}
               onUpgradePrompt={() => setShowSubscriptionModal(true)}
+              recordings={recordings}
+              onUploadToIPFS={uploadToIPFS}
+              onDownload={downloadRecording}
+              onShare={shareRecording}
+              isUploading={isUploading}
+              uploadProgress={uploadProgress}
             />
           </div>
         </div>
@@ -154,7 +200,7 @@ function App() {
               guide={guide}
               onSelect={handleGuideSelect}
               isPremium={guide.isPremium}
-              userSubscription={user.subscriptionStatus}
+              userSubscription={subscriptionStatus}
             />
           ))}
         </div>
@@ -165,7 +211,7 @@ function App() {
             Key Phrases to Remember
           </h2>
           <div className="grid gap-3">
-            {SCRIPTED_RESPONSES[user.preferredLanguage].map((phrase, index) => (
+            {SCRIPTED_RESPONSES[preferences.language].map((phrase, index) => (
               <div
                 key={index}
                 className="bg-white/10 rounded-md p-3 text-white/90 hover:bg-white/20 transition-colors cursor-pointer"
@@ -243,6 +289,14 @@ function App() {
         />
       )}
     </div>
+  )
+}
+
+function App() {
+  return (
+    <UserProvider>
+      <AppContent />
+    </UserProvider>
   )
 }
 
